@@ -53,15 +53,7 @@ protected:
 public:
 
 	HManager();
-
-	virtual ~HManager()
-	{
-		std::vector<h_thread*>::iterator it;
-		for(it=thrds.begin(); it!=thrds.end(); it++)
-			delete*it;
-		thrds.clear();
-		entities.clear();
-	}
+	virtual ~HManager();
 
 #ifdef _WIN32
 	LARGE_INTEGER	m_nFrequency;

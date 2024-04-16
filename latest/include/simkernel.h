@@ -61,9 +61,9 @@ class  sim_type_p : public sim_predicate {
 	int tag1,tag2,tag3,tag4;
     int ntags;
 public:
-	sim_type_p(int t1) : tag1(t1) {ntags = 1;tester=4;};
-    sim_type_p(int t1, int t2) : tag1(t1),tag2(t2) {ntags = 2;tester=5;};
-    sim_type_p(int t1, int t2, int t3) : tag1(t1), tag2(t2), tag3(t3) {ntags = 3;tester=6;};
+	sim_type_p(int t1) : tag1(t1), tag2(0), tag3(0), tag4(0) {ntags = 1;tester=4;};
+    sim_type_p(int t1, int t2) : tag1(t1),tag2(t2), tag3(0), tag4(0) {ntags = 2;tester=5;};
+    sim_type_p(int t1, int t2, int t3) : tag1(t1), tag2(t2), tag3(t3), tag4(0) {ntags = 3;tester=6;};
     sim_type_p(int t1, int t2, int t3, int t4) : tag1(t1), tag2(t2), tag3(t3), tag4(t4) {ntags = 4;tester=7;};
     int match(sim_event &ev) {
     	switch (ntags) {

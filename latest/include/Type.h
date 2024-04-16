@@ -180,8 +180,8 @@ class Instr : public Enum {
   Type **list;
 public:
   Instr(int size);
-  bool addField(char *name);
-  void addField(char *name, Type *t);
+  bool addField(const char *name);
+  void addField(const char *name, Type *t);
   Type *fromString(const char *v, int *len);
   char *toString(char *v, const Filter *f = 0) const;
   const Type *getType(int num=-1);

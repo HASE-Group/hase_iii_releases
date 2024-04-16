@@ -26,7 +26,10 @@ class HProject
 
  public:
 
-	HProject() {};
+	HProject() {
+		isAnimated = false;
+		timeStamp = 0.0f;
+	};
 
 	bool	open( const char*);
 	bool    isAnimationOn();

@@ -55,7 +55,7 @@ class Clock : public sim_entity {
   void registering(sim_entity_id ev_id);
 
   // cycle(out) should not be here
-  Clock(char *n, int cycle_i=0, double period_d=10);
+  Clock(const char *n, int cycle_i=0, double period_d=10);
   virtual void dumpState(int stage, char type);
   void dump_state(int stage=0);
   void dump_state_i(int stage=0);
@@ -73,7 +73,7 @@ class Clock : public sim_entity {
 	* @param p0			The length in simulation time units of the even cycles
 	* @param p1	 		ditto for odd cycles
 	*/
-	Clock(char *n, int cycle_i, double period, double period1);
+	Clock(const char *n, int cycle_i, double period, double period1);
 
 	/**
 	 * This method returns the period of phase0
