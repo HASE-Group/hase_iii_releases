@@ -1,0 +1,1 @@
+"null" -Xms32m -Xmx1024m -cp "E:\Jenkins\workspace\HASE\hase_iii\bin\HASEIII_GUI.jar" uk.ac.ed.inf.hase.gui.Main

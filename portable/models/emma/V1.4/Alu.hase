@@ -1,0 +1,216 @@
+
+// Project:	Microcoded Processor
+// Entity	ALU
+// File		Alu.hase
+// Date:	29 May 2003
+
+// This unit has a control input, two data inputs and one data output.
+// It combines the inputs together according to the function sent from
+// the Microcode unit as part of the control word and sends the result
+// to its output.
+// Functions are:
+// 0: ADD, 1: SUB, 2: AND, 3: OR, 4: XOR, 5: SLL, 6: SRA, 7: SRL
+
+// CC = CC0, CC1
+// CC0 = 0 if result = 0;
+// CC1 = 1 if result < 0;
+
+// Control word:
+// Bits 24-27 represent the function
+// Bit 28 controls input1
+// Bit 29 controls input2
+// Bit 30 controls output1
+// Bit 31 controls output2
+
+$class_decls
+
+//structures and variables
+
+  bool execute_fn;
+  int inputA, inputB;
+  int alu_input1, alu_input2;
+  int function, mask, shift, sign_ext;
+  int old_state;
+
+  int result, cond_code;
+  int c_input, control;
+
+//classes
+
+  int Result();
+
+$class_defs
+
+  int Alu::Result()
+
+// computes result of instruction
+{
+	  if      (function == 0)	// ADD
+		{
+		result = alu_input1 + alu_input2;
+		}
+
+	  else if (function == 1)	// SUB
+		{
+		result = alu_input1 - alu_input2;
+		}
+
+	  else if (function == 2)	// AND
+		{
+		result = alu_input1 & alu_input2;
+		}
+
+	  else if (function == 3)	// OR
+		{
+		result = alu_input1 | alu_input2;
+		}
+
+	  else if (function == 4)	// XOR
+		{
+		result = alu_input1 ^ alu_input2;
+		}
+
+	  else if (function == 5)	// SLL
+		{
+		shift = alu_input2;
+		result = alu_input1 << shift;
+		}
+
+	  else if (function == 6)	// SRL
+		{
+		shift = alu_input2;
+		mask = -1 ^ ( ( (pow (2, shift)) - 1) << (32 - shift) );
+		result = alu_input1 >> shift;
+		result &= mask;
+		}
+
+	  else if (function == 7)	// SRA
+		{
+		shift = alu_input2;
+		sign_ext = alu_input1 & (1 << 31);
+		mask = ( (pow (2, shift)) - 1) << (32 - shift);
+		result = alu_input1 >> shift;
+			if (sign_ext != 0)
+			{result |= mask;}
+		}
+
+	return result;
+}
+
+$pre
+
+  execute_fn = false;
+  alu_input1 = 0;
+  alu_input2 = 0;
+  control = 0;
+  function = 0;
+  CC0 = 0;
+  CC1 = 0;
+  cond_code = 0;
+  result = 0;
+
+  my_state = ALU_IDLE;
+  old_state = ALU_IDLE;
+  dump_state();
+
+$phase0
+
+// predicates for use in sim_waiting test
+
+  sim_from_port C_Input(control_input);	    
+  sim_from_port InputA(input1);	    
+  sim_from_port InputB(input2);	    
+
+// RESET INPUTS	TO 0
+
+  alu_input1 = 0;
+  alu_input2 = 0;
+
+// DEAL WITH INPUT
+
+  if  (sim_waiting(ev, C_Input) > 0)
+     {
+	SIM_CAST_DEL(int, c_input, ev);
+	control = c_input & 15;
+	function = (c_input >> 4) & 15;
+	execute_fn = true;
+     }
+
+// set unit busy if either of its output control bits is 1
+// and set void/active state in display
+
+  if ( ((control & 8) == 8) || ((control & 4) == 4) )
+
+	  {my_state = ALU_BUSY;}
+	else
+	  {my_state = ALU_IDLE;}
+
+  if  (sim_waiting(ev, InputA) > 0)
+     {
+	SIM_CAST_DEL( int, inputA, ev);
+	alu_input1 = inputA;
+     }
+
+  if  (sim_waiting(ev, InputB) > 0)
+     {
+	SIM_CAST_DEL( int, inputB, ev);
+	alu_input2 = inputB;
+     }
+
+// set inputs to 0 if corresponding control bit is 0
+
+  if ((control & 8) == 0)
+	{alu_input1 = 0;}
+  if ((control & 4) == 0)
+	{alu_input2 = 0;}
+
+
+// compute result
+
+  if (execute_fn)
+   {
+    result = Result();
+
+    if (result == 0)
+	{CC0 = 0;}
+    else
+	{CC0 = 1;}
+
+    if (result < 0)
+	{CC1 = 1;}
+    else
+	{CC1 = 0;}
+  cond_code = (CC0 << 1) | CC1;
+    execute_fn = false;
+   }
+
+	 if (my_state != old_state)
+	  {dump_state();
+	   old_state = my_state;}
+	// end of ClockPhase = 0
+
+$phase1
+
+
+// If output1 control bit = 1, send result to output1 
+// If output2 control bit = 1, send result to output2 
+// If output1 or output2 control bit = 1, send condition code
+
+ if ((control & 1) == 1)
+	{
+	 send_RESULT(output2, result);
+	}
+ if ((control & 2) == 2)
+	{
+	 send_RESULT(output1, result);
+	}
+ if ( ((control & 1) == 1) || ((control & 2) == 2) )
+	{
+	 send_RESULT(CCoutput, cond_code);
+	}
+  control = 0;
+	// end of  ClockPhase 1
+
+
+
+

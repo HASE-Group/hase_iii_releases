@@ -1,0 +1,631 @@
+
+// Project:	Microcoded Microprocessor
+// Entity	Microcode unit
+// File		microcode.hase
+// Date:	4 May 2004
+
+// This unit has two visible inputs, one from the instruction memory
+// and one from the Microprogram Counter (MPC), and one invisible input
+// from the ALU containing the Condition Code.
+// It has two data path outputs, one a value to be loaded into the MPC, the
+// other on to the bus.
+// It also has an output for each of the units it controls.
+// It contains the microcode memory array containing 256 words each
+// containing function field (null in many cases), the microcode bits
+// and an address used to load MPC (in some cases).
+// If MPC is loaded with a new address (i.e. not MPC+1), there is a
+// 1-clock delay before the new value is returned. In this branch slot,
+// the Microcode unit sets the microcode word to 0x000000D0, thus
+// incrementing MPC in the next clock.
+// There is no point in it being shown to change state since it's
+// always active
+
+// Microcode bits are allocated as follows:
+
+/*
+--	00 Not used
+--	01 Mcode addr/immed  	-> bus 1
+--	02 Mcode addr/immed  	-> bus 2
+--	03 Mcode ucode address 	-> MPC
+
+--	04 Mcode select ~CC0
+--	05 Mcode select CC1
+--	06 execute microcode if condition is true  ) but always execute
+--	07 execute microcode if condition is false ) MPC code
+
+--	08 MPC input 1		<- MPC output 1
+--	09 MPC input 2		<- +1
+--	10 MPC input 3		<- microcode
+--	11 MPC output 2		-> microcode
+
+--	12 PC input 1		<- PC output
+--	13 PC input 2		<- +1
+--	14 PC input 3		<- bus2
+--	15 PC output 2		-> i_memory
+
+--	16 not used
+--	17 Registers input	<- alu
+--	18 Registers output1	-> bus1
+--	19 Registers output2	-> bus2
+
+--	20 Memory MAR input	<- bus2
+--	21 Memory MBR input	<- bus1
+--	22 Memory Read/Write
+--	23 Memory MBR output	-> bus1
+
+--	24 ALU input1		<- bus1
+--	25 ALU input2		<- bus2
+--	26 ALU output1		-> registers
+--	27 ALU output2		-> bus 2
+
+--	28 ALU = 0
+--	29 ALU )
+--	30 ALU ) function
+--	31 ALU )
+
+*/
+
+$class_decls
+
+//structures and variables
+
+  bool new_instrn, new_mpc_value, branch_slot, branch;
+  bool condition, send_ucode;
+  bool stop, output_src1, output_src2, output_index1, output_index2;
+  bool address_error, clash;
+
+  char  Destination[8], Source1[8], Source2[8];
+  char new_label[8];
+
+  int max_cycles;
+  int mpc, mpc_input, MPC_input;
+  int cond_code;
+  int i, literal, sign_ext;
+  int mem_address;
+  int alu_fn;
+  int dest_regs, source_regs;	// numbers of regs used in instruction
+  int dest, src1, src2;	// destination, source1, source2 reg numbers
+  t_reg_args dest_args, src1_args, src2_args;	// structures for holding
+						// decoded register arguments
+
+  int output_to_bus;
+  t_uproc_instrn_set i_input;
+
+  t_ucode_mem_word mem_word;
+  int REGS_UCODE, MEM_UCODE, ALU_FN, ALU_UCODE, PC_UCODE, MPC_UCODE, OWN_UCODE, BRANCH_UCODE;
+
+
+//classes
+
+$class_defs
+
+
+$pre
+
+  send_ucode = true;
+  new_instrn = false;
+  new_mpc_value = false;
+  branch_slot = false;
+  branch = false;
+  address_error = false;
+  clash = false;
+
+  CODEWORD     = 0X0;
+  REGS_UCODE   = 0x0;
+  MEM_UCODE    = 0x0;
+  ALU_FN       = 0x0;
+  ALU_UCODE    = 0x0;
+  PC_UCODE     = 0x0; 
+  MPC_UCODE    = 0x0;
+  OWN_UCODE    = 0x0;
+  BRANCH_UCODE = 0x0;
+  MPC_VALUE    = 0;
+
+  cond_code = 0x0;
+
+  dest_regs = 0;
+  dest = 0;
+  src1 = 0;
+  src2 = 0;
+  mpc = 0;  
+
+// set max_cycles to 2 ^ log_max_cycles
+
+
+   max_cycles = 1 << log_max_cycles;
+
+// preset instruction to JUMP 0
+
+  INSTRUCTION.reset();
+  dump_state_i();
+
+// Send  packets to MPC to initiate reading of microcode word 0
+// which contains the microcode for JUMP, i.e. first instruction
+// executed is JUMP 0
+
+  output_to_bus = 0;
+
+// Send code to MPC so that it executes a jump to line 0
+
+  MPC_UCODE = 0x3;
+  MPC_VALUE = 0;
+  send_RESULT(to_mpc, MPC_VALUE);	// new mpc value
+  send_UCODE(control6, MPC_UCODE);
+
+$phase0
+
+// predicates for use in sim_waiting test
+
+  sim_from_port I_Input(instr_in);	    
+  sim_from_port MPC_Input(from_mpc);    
+  sim_from_port CC_Input(CCinput);    
+
+    // DEAL WITH INPUT
+
+// There should only ever be one input in any one clock period,
+// a new instruction from the memory or a new MPC value. If both
+// occur, the simulation is stopped and an error displayed
+// If there's a new instruction, search the memory for a label
+// matching its function and read that memory line.
+// Set alu_ucode bits 24-27 according to the function.
+// If there is no entry for that function, stop the simulation and
+// display an error 
+
+  if  (sim_waiting(ev, I_Input) > 0)
+     {
+	SIM_CAST_DEL(t_uproc_instrn_set, i_input, ev);
+	new_instrn = true;
+	INSTRUCTION = i_input;
+//	dump_state();
+
+	stop = false;
+	output_src1 = false;
+	output_src2 = false;
+	output_index1 = false;
+	output_index2 = false;
+	sign_ext = 0;
+
+	switch(INSTRUCTION.function)
+	 {
+	  case STOP:	 stopSimulation(0);
+		stop = true;
+		break;
+	  case JUMP:
+		MEM_ADDRESS = 0;
+		literal = INSTRUCTION.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 0;
+	   	break;
+	  case JREG:
+		MEM_ADDRESS = 1;
+	  	strcpy(Source2, INSTRUCTION.src_reg);
+		dest_regs = 0;
+		output_src2 = true;
+	   	break;
+	  case BEQZ:
+		MEM_ADDRESS = 2;
+		literal = INSTRUCTION.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 0;
+	   	break;
+	  case BNEG:
+		MEM_ADDRESS = 3;
+		literal = INSTRUCTION.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 0;
+	   	break;
+
+// LD and LDI use the same instruction format. LD treats the immediate
+// field as an address, LDI treats it as a value; the difference is in
+// the microcode.
+
+	  case LD:
+		MEM_ADDRESS = 4;
+	  	strcpy(Destination, INSTRUCTION.loadi_field.dest_reg);
+		literal = INSTRUCTION.loadi_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 1;
+	   	break;
+	  case LDL:
+		MEM_ADDRESS = 5;
+	  	strcpy(Destination, INSTRUCTION.loadi_field.dest_reg);
+		literal = INSTRUCTION.loadi_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+	dest_regs = 1;
+	   	break;
+	  case LDX:
+		MEM_ADDRESS = 6;
+		strcpy(Destination, INSTRUCTION.load_field.dest_reg);
+		strcpy(Source1, INSTRUCTION.load_field.src);
+		dest_regs = 1;
+		output_src1 = true;
+		output_index1 = true;
+	   	break;
+	  case ST:
+		MEM_ADDRESS = 7;
+	  	strcpy(Source1, INSTRUCTION.storei_field.src_reg);
+		literal = INSTRUCTION.storei_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 0;
+		output_src1 = true;
+	   	break;
+	  case STX:
+		MEM_ADDRESS = 8;
+		strcpy(Source2, INSTRUCTION.store_field.dest);
+		strcpy(Source1, INSTRUCTION.store_field.src_reg);
+		dest_regs = 0;
+		output_src1 = true;
+		output_src2 = true;
+		output_index2 = true;
+	   	break;
+	  case ADD:
+		MEM_ADDRESS = 9;
+	  	strcpy(Destination, INSTRUCTION.alu_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alu_field.src_reg1);
+	  	strcpy(Source2, INSTRUCTION.alu_field.src_reg2);
+		dest_regs = 1;
+		output_src1 = true;
+		output_src2 = true;
+	   	break;
+	  case ADDL:
+		MEM_ADDRESS = 10;
+	  	strcpy(Destination, INSTRUCTION.alui_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alui_field.src_reg1);
+		literal = INSTRUCTION.alui_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 1;
+		output_src1 = true;
+	   	break;
+	  case SUB:
+		MEM_ADDRESS = 11;
+		dest_regs = 0;
+		source_regs = 12;
+	  	strcpy(Destination, INSTRUCTION.alu_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alu_field.src_reg1);
+	  	strcpy(Source2, INSTRUCTION.alu_field.src_reg2);
+		dest_regs = 1;
+		output_src1 = true;
+		output_src2 = true;
+	   	break;
+	  case SUBL:
+		MEM_ADDRESS = 12;
+	  	strcpy(Destination, INSTRUCTION.alui_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alui_field.src_reg1);
+		literal = INSTRUCTION.alui_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 1;
+		output_src1 = true;
+	   	break;
+	  case AND:
+		MEM_ADDRESS = 13;
+	  	strcpy(Destination, INSTRUCTION.alu_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alu_field.src_reg1);
+	  	strcpy(Source2, INSTRUCTION.alu_field.src_reg2);
+		dest_regs = 1;
+		output_src1 = true;
+		output_src2 = true;
+	   	break;
+	  case ANDL:
+		MEM_ADDRESS = 14;
+	  	strcpy(Destination, INSTRUCTION.alui_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alui_field.src_reg1);
+		literal = INSTRUCTION.alui_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 1;
+		output_src1 = true;
+	   	break;
+	  case OR:
+		MEM_ADDRESS = 15;
+	  	strcpy(Destination, INSTRUCTION.alu_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alu_field.src_reg1);
+	  	strcpy(Source2, INSTRUCTION.alu_field.src_reg2);
+		dest_regs = 1;
+		output_src1 = true;
+		output_src2 = true;
+	   	break;
+	  case ORL:
+		MEM_ADDRESS = 16;
+	  	strcpy(Destination, INSTRUCTION.alui_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alui_field.src_reg1);
+		literal = INSTRUCTION.alui_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 1;
+		output_src1 = true;
+	   	break;
+	  case XOR:
+		MEM_ADDRESS = 17;
+	  	strcpy(Destination, INSTRUCTION.alu_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alu_field.src_reg1);
+	  	strcpy(Source2, INSTRUCTION.alu_field.src_reg2);
+		dest_regs = 1;
+		output_src1 = true;
+		output_src2 = true;
+	   	break;
+	  case XORL:
+		MEM_ADDRESS = 18;
+	  	strcpy(Destination, INSTRUCTION.alui_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alui_field.src_reg1);
+		literal = INSTRUCTION.alui_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 1;
+		output_src1 = true;
+	   	break;
+	  case SLL:
+		MEM_ADDRESS = 19;
+	  	strcpy(Destination, INSTRUCTION.alu_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alu_field.src_reg1);
+	  	strcpy(Source2, INSTRUCTION.alu_field.src_reg2);
+		dest_regs = 1;
+		output_src1 = true;
+		output_src2 = true;
+	   	break;
+	  case SLLL:
+		MEM_ADDRESS = 20;
+	  	strcpy(Destination, INSTRUCTION.alui_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alui_field.src_reg1);
+		literal = INSTRUCTION.alui_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 1;
+		output_src1 = true;
+	   	break;
+	  case SRL:
+		MEM_ADDRESS = 21;
+	  	strcpy(Destination, INSTRUCTION.alu_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alu_field.src_reg1);
+	  	strcpy(Source2, INSTRUCTION.alu_field.src_reg2);
+		dest_regs = 1;
+		output_src1 = true;
+		output_src2 = true;
+	   	break;
+	  case SRLL:
+		MEM_ADDRESS = 22;
+	  	strcpy(Destination, INSTRUCTION.alui_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alui_field.src_reg1);
+		literal = INSTRUCTION.alui_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 1;
+		output_src1 = true;
+	   	break;
+	  case SRA:
+		MEM_ADDRESS = 23;
+	  	strcpy(Destination, INSTRUCTION.alu_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alu_field.src_reg1);
+	  	strcpy(Source2, INSTRUCTION.alu_field.src_reg2);
+		dest_regs = 1;
+		output_src1 = true;
+		output_src2 = true;
+	   	break;
+	  case SRAL:
+		MEM_ADDRESS = 24;
+	  	strcpy(Destination, INSTRUCTION.alui_field.dest_reg);
+	  	strcpy(Source1, INSTRUCTION.alui_field.src_reg1);
+		literal = INSTRUCTION.alui_field.immediate & 65535;
+						// mask off ms 16 bits
+		if ((literal & 32768) != 0)
+			{sign_ext = -1 ^ 65535;} // generate sign extension
+		literal = literal | sign_ext;
+		output_to_bus = literal;
+		dest_regs = 1;
+		output_src1 = true;
+	   	break;
+	 }
+
+	if (dest_regs == 1)
+	 {
+	  dest_args = Decode_Register(Destination);
+	  dest  = dest_args.number & 15;
+	 }
+	else
+	 {dest = 0;}
+	 src1 = 0;
+	  src2 = 0;
+
+	if (output_src1)
+	 {
+	  src1_args = Decode_Register(Source1);
+	  src1  = src1_args.number & 15;
+	 }
+
+	 if (output_src2)
+	 {
+	  src2_args = Decode_Register(Source2);
+	  src2  = src2_args.number & 15;
+	 }
+	if (output_index1)
+	 {
+	  output_to_bus = src1_args.index;
+	 }	  
+	if (output_index2)
+	 {
+	  output_to_bus = src2_args.index;
+	 }	  
+
+	   mem_word = memory[MEM_ADDRESS];
+
+	} 				// end of new instruction pkt
+
+  if  (sim_waiting(ev, MPC_Input) > 0)
+     {
+	SIM_CAST_DEL(int, MEM_ADDRESS, ev);
+	if ( (MEM_ADDRESS >= 0) && (MEM_ADDRESS < 256) )
+	 {mem_word = memory[MEM_ADDRESS];}
+	else
+	 {
+	  address_error = true;
+	  stopSimulation(-1);
+	 }
+	new_mpc_value = true;
+     }
+
+  if  (sim_waiting(ev, CC_Input) > 0)
+     {
+	SIM_CAST_DEL(int, cond_code, ev);
+     }
+
+  if (new_instrn && new_mpc_value)
+	{
+	 clash = true;
+	 stopSimulation(0);
+	}
+  if (branch_slot)
+	{
+	  CODEWORD = 0x00D00000; 
+	  MPC_VALUE = 0;
+	 branch_slot = false;
+	} 
+	else if ((new_instrn && !stop) || new_mpc_value)
+  	 {CODEWORD = mem_word.microcode;}
+	else
+	 {MEM_ADDRESS = 0;
+	  CODEWORD = 0X0;}
+
+	  OWN_UCODE    = 15 & (CODEWORD >> 28);
+	  BRANCH_UCODE = 15 & (CODEWORD >> 24);
+	  MPC_UCODE    = 15 & (CODEWORD >> 20);
+	  PC_UCODE     = 15 & (CODEWORD >> 16);
+	  REGS_UCODE   = 07 & (CODEWORD >> 12);
+	  MEM_UCODE    = 15 & (CODEWORD >>  8);
+	  ALU_UCODE    = 15 & (CODEWORD >>  4);
+	  ALU_FN       = 07 &  CODEWORD;
+	  MPC_VALUE    = mem_word.address;
+
+// update display and then append ALU function and register numbers
+
+	 dump_state();
+
+	 ALU_UCODE    = ALU_UCODE | (ALU_FN << 4);
+	  if (REGS_UCODE > 0)
+	  	{REGS_UCODE = REGS_UCODE
+			    | (dest << 12)
+			    | (src1 << 8)
+			    | (src2 << 4);
+	  }
+
+
+// Deal with microcode condition execution: 
+// Set condition = true if
+// 1. select ~CC0 is set and CC0 = 0 (i.e. ALU result = 0)
+// 2. select ~CC1 is set and CC0 = 1 (i.e. ALU result is -ve)
+
+  if ( ( ((BRANCH_UCODE & 8) == 8) && ((cond_code & 2) != 2) )
+     ||( ((BRANCH_UCODE & 4) == 4) && ((cond_code & 1) == 1) ) )
+	{condition = true;}
+  else
+	{condition = false;}
+
+// Execute microcode (set send_ucode) if 
+// 1. neither conditional bit is set
+// 2. "execute if condition is true" bit is set and condition is true
+// 3. "execute if condition is false" bit is set and condition is false
+
+  if ( (((BRANCH_UCODE & 2) == 0) && (( BRANCH_UCODE & 1) == 0))
+    || (((BRANCH_UCODE & 2) > 0) && condition)
+    || (((BRANCH_UCODE & 1) > 0) && !condition) )
+	{send_ucode = true;}
+  else  {send_ucode = false;}
+
+	// end of ClockPhase = 0
+
+$phase1
+
+// stop simulation if max cycles exceeded
+
+  if (no>=max_cycles) 
+	{stopSimulation(0);}
+
+// If send_ucode is set, send microcode to units
+  if (send_ucode)
+   {
+    if (REGS_UCODE > 0)
+      {send_UCODE(control2, REGS_UCODE, 5.0f);}
+
+    if (MEM_UCODE > 0)
+      {send_UCODE(control3, MEM_UCODE, 5.0f);}
+
+    if (ALU_UCODE > 0)
+      {send_UCODE(control1, ALU_UCODE, 5.0f);}
+
+    if (PC_UCODE > 0)
+      {send_UCODE(control5, PC_UCODE, 5.0f);}
+
+    if ((OWN_UCODE & 1) == 1)
+	{
+	 send_RESULT(to_mpc, MPC_VALUE);	// new mpc value
+	 branch_slot = true;
+	}
+    if ((OWN_UCODE & 2) > 0)
+	{send_RESULT(to_bus2, output_to_bus);}
+    if ((OWN_UCODE & 4) > 0)
+	{send_RESULT(to_bus1, output_to_bus);}
+   }
+
+// always send microcode to MPC
+    if (MPC_UCODE > 0)
+      {send_UCODE(control6, MPC_UCODE, 5.0f);}
+
+
+  new_instrn = false;
+  new_mpc_value = false;
+
+
+	// end of  ClockPhase 1
+
+$report
+
+  if (address_error)
+   {printf("Simulation aborted: invalid microcode memory address\n");}
+
+  if (clash)
+   {printf("Simulation aborted: new instruction and new MPC value colliding\n");}

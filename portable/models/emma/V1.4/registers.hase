@@ -1,0 +1,125 @@
+
+// Project:	Microcoded Processor
+// Entity	Registers unit
+// File		registers.hase
+// Date:	28 May 2003
+
+// There are 16 registers, R0-15. R0 always contains 0.
+// The Registers unit has a instruction/control input, one data input
+// and two data outputs.
+// If it receives an input it writes it into the register specified
+// in the destination field in the instruction.
+// If one or both of the output control bits are set it reads the value
+// from the register specified by the corresponding source field in the
+// instruction and sends it to the corresponding output.
+// The microcode unit sends 4 control bits (28, 29, 30, 31).
+// These bits come from bits 12, 13, 14, 15 of the microcode word. 
+// Bits 16-19 Destination Register address
+// Bits 20-23 Source Register 1 address
+// Bits 24-27 Source Register 2 address
+// Bit 28 not used 
+// Bit 29 controls input2
+// Bit 30 controls output1
+// Bit 31 controls output2
+
+
+$class_decls
+
+//structures and variables
+
+  int inputA;
+  int input2;
+  int dest_reg, src_reg1, src_reg1_value, src_reg2, src_reg2_value;
+  int old_state;
+  t_prog_reg update;
+  int result1, result2;
+  int c_input, control;
+
+//classes
+
+$class_defs
+
+$pre
+
+  control = 0;
+  my_state = R_IDLE;
+  old_state = R_IDLE;
+  dump_state();
+  input2 = 0;
+
+$phase0
+
+// predicates for use in sim_waiting test
+
+  sim_from_port C_Input(control_input);	    
+  sim_from_port InputA(input);	    
+
+    // DEAL WITH INPUT
+
+  if  (sim_waiting(ev, C_Input) > 0)
+     {
+	SIM_CAST_DEL(int, c_input, ev);
+	control  = c_input & 15;
+	src_reg2 = (c_input >> 4) & 15;
+	src_reg1 = (c_input >> 8) & 15;
+	dest_reg = (c_input >> 12) & 15;
+     }
+
+// set unit READ busy if either of its output control bits is 1
+// and set void/active state in display
+
+  if (((control & 1) == 1) || ((control & 2) == 2))
+	  {my_state = R_READ;}
+  else if ((control & 4) == 4)
+	  {my_state = R_WRITE;}
+  else
+	  {my_state = R_IDLE;}
+
+	 if (my_state != old_state)
+	  {dump_state();
+	   old_state = my_state;}
+  if  (sim_waiting(ev, InputA) > 0)
+     {
+	SIM_CAST_DEL( int, inputA, ev);
+	input2 = inputA;
+     }
+
+// If output1 control bit = 1, read src_reg1
+
+  if ((control & 2) == 2)
+	{result1 = main_reg[src_reg1].reg_value;}
+
+// If output2 control bit = 1, read src_reg2
+
+  if ((control & 1) == 1)
+	{result2 = main_reg[src_reg2].reg_value;}
+
+// If input control bit = 1, write value to dest_reg, except for R0
+// which is always 0
+
+  if ((control & 4) == 4)
+	{update.reg_value = input2;
+	 if (dest_reg == 0)
+	  {update.reg_value = 0;}
+	  main_reg.Update(dest_reg, update);
+	}
+
+	// end of ClockPhase = 0
+
+$phase1
+
+
+// If output1 control bit = 1, send Source Register 1 value to output 1
+
+ if ((control & 2) == 2)
+	  {send_RESULT(output1, result1);}
+
+// If output2 control bit = 1, send Source Register 2 value to output 2
+
+ if ((control & 1) == 1)
+	  {send_RESULT(output2, result2);}
+  control = 0;
+	// end of  ClockPhase 1
+
+
+

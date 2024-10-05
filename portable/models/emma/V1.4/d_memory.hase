@@ -1,0 +1,115 @@
+
+// Project:	Microcoded Processor
+// Entity	Data Memory
+// File:	d_memory.hase
+// Date:	Feb 2006
+
+// The Data Memory Unit contains an RARRAY data_mem, the Memory Address
+// Register (MAR) and the Memory Buffer Register (MBR).
+// It receives data Read/Write addresss into MAR from Bus2 and Write
+// data into MBR from Bus1
+// Requests are processed in ClockPhase 0 and for Read requests data is
+// returned in the next ClockPhase 1.
+
+// Control word:
+// Bit 28 controls MAR input
+// Bit 29 controls MBR input
+// Bit 30 R/W (0 = read, 1 = write)
+// Bit 31 controls MBR output
+
+$class_decls
+
+//structures and variables
+
+  bool r_request, w_request, address_error;
+  int A_Input, mem_address,  D_Input;
+  int write_data;
+  int mem_output;
+  int c_input, control;
+
+  int old_d_state;
+
+$pre
+
+  MAR = 0;
+  MBR = 0;
+  control = 0;
+  r_request = false;
+  w_request = false;
+  address_error = false;
+  my_state = D_M_IDLE;
+  dump_state();
+
+$phase0
+
+// predicates for use in sim_wait tests
+
+  sim_from_port C_Input(control_input);	    
+  sim_from_port data_access(data_request);
+  sim_from_port write_access(data_in);	    
+
+  my_state = D_M_IDLE;
+
+  if  (sim_waiting(ev, C_Input) > 0)
+     {
+	SIM_CAST_DEL(int, c_input, ev);
+	control = c_input & 15;
+	if ( ( (control & 8) == 8) && ((control & 2) == 0))
+	 {r_request = true;
+	  my_state = D_M_READ;
+	 }
+	if (((control & 8) == 8) && ((control & 2) == 2))
+	 {w_request = true;
+	  my_state = D_M_WRITE;
+	 }
+     }
+   {if (sim_waiting(ev, data_access) > 0)
+	{
+	 SIM_CAST_DEL(int, A_Input, ev);
+	}
+  if (sim_waiting(ev, write_access) > 0)
+	{
+	 SIM_CAST_DEL(int, D_Input, ev);
+	}
+    }
+  if ( (MAR >= 0) && (MAR < D_Mem_Size) )
+	{
+	 if (r_request)
+		 {
+		  MAR = A_Input;
+		  mem_output = data_mem[MAR];
+		 }
+	else if (w_request)
+		{
+		 MAR = A_Input;
+	 	 MBR = D_Input;
+	 	 write_data = D_Input;
+	 	 data_mem.Update(MAR, write_data);
+		}
+	}
+   else
+	 {
+	  address_error = true;
+	  stopSimulation(-2); // Invalid data memory address
+	  }
+  dump_state();
+
+ 	// end of ClockPhase 0
+
+$phase1
+
+  if (r_request)
+	{
+	 MBR = mem_output;
+	 send_RESULT(data_out, mem_output);
+	}
+  r_request = false;
+  w_request = false;
+  dump_state_i();
+  control = 0;
+	// end of ClockPhase 1
+
+$report
+
+  if (address_error)
+   {printf("Simulation aborted: invalid data memory address\n");}

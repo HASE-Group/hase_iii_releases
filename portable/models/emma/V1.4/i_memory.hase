@@ -1,0 +1,78 @@
+
+// Project:	Microcoded Processor
+// Entity	Instruction Memory
+// File:	i_memory.hase
+// Date:	Feb 2006
+
+// The Instruction Memory Unit contains the RARRAY instr_mem.
+// The instrction and data memories are separate because instructions
+// are held in readable (string) form for visualisation purposes.
+// The Instruction Memory receives instruction requests from the Program
+// Counter.
+// Requests are processed in ClockPhase 0 and returned 
+// in a subsequent ClockPhase 1, depending on the Access Time parameter.
+// Multi-cycle access times are implemented via a pipeline. This allows
+// for the possibility of modelling memory interleaving, giving the
+// potential to handle one access per clock even when the access time is
+// several clocks.
+
+$class_decls
+
+  bool i_access, address_error;
+  int A_Input, mem_address;
+
+//structures and variables
+
+   t_uproc_instrn_set mem_output;
+
+$pre
+
+  i_access = false;
+  address_error = false;
+  mem_address = 0;
+  my_state = I_M_IDLE;
+  dump_state();
+
+$phase0
+
+// predicates for use in sim_wait tests
+
+  sim_from_port inst_access(instr_request);	    
+
+	 if (sim_waiting(ev, inst_access) > 0)
+	  {
+	   SIM_CAST_DEL(int, A_Input, ev);
+	   mem_address = A_Input;
+	   i_access = true;
+	   my_state = I_M_BUSY;
+	   dump_state();
+
+	   if ( (mem_address >= 0) && (mem_address < I_Mem_Size))
+	     {
+	    	mem_output = instr_mem[mem_address];
+	     } 
+	   else
+		{
+		 address_error = true;
+		 stopSimulation(-1);	// Invalid instruction memory address
+		}
+	}
+
+ 	// end of ClockPhase 0
+
+$phase1
+
+  if (i_access)
+	{
+	  send_INSTRUCTION(instr_out, mem_output);
+	  my_state = I_M_IDLE;
+	  dump_state();
+	}
+  i_access = false;
+
+	// end of ClockPhase 1
+
+$report
+
+  if (address_error)
+   {printf("Simulation aborted: invalid instruction memory address\n");}
